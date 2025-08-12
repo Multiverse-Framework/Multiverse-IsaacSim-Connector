@@ -660,11 +660,11 @@ class UIBuilder(MultiverseConnector):
 
             for xform_prim_view_name, xform_prim_view in self.scene_registry.xform_prim_views.items():
                 bodies_positions[xform_prim_view_name], bodies_quaternions[xform_prim_view_name] = xform_prim_view.get_world_poses()
-                bodies_forces_torques[xform_prim_view_name] = {}
 
             for rigid_prim_view_name, rigid_prim_view in self.scene_registry.rigid_prim_views.items():
                 bodies_positions[rigid_prim_view_name], bodies_quaternions[rigid_prim_view_name] = rigid_prim_view.get_world_poses()
                 bodies_velocities[rigid_prim_view_name] = {}
+                bodies_forces_torques[rigid_prim_view_name] = {}
 
             for articulation_view_name, articulation_view in self.scene_registry.articulated_views.items():
                 bodies_velocities[articulation_view_name] = {}
@@ -744,14 +744,12 @@ class UIBuilder(MultiverseConnector):
                             effort = bodies_forces_torques.get(view_name, {}).get(object_idx, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                             if attribute == "force":
                                 force = receive_data[:3]
-                                receive_data = receive_data[3:]
                                 effort[:3] = force
                             elif attribute == "torque":
                                 torque = receive_data[:3]
-                                receive_data = receive_data[3:]
                                 effort[3:] = torque
                             receive_data = receive_data[3:]
-                            bodies_forces_torques[view_name][object_idx][attribute] = effort
+                            bodies_forces_torques[view_name][object_idx] = effort
                         else:
                             self.logwarn(f"Attribute {attribute} not supported for body {prim_path.pathString} yet.")
 
@@ -780,10 +778,11 @@ class UIBuilder(MultiverseConnector):
                     cmd_body_idxes = list(bodies_velocities[rigid_prim_view_name].keys())
                     rigid_prim_view.set_velocities(velocities=cmd_body_velocities, indices=cmd_body_idxes)
                 if rigid_prim_view_name in bodies_forces_torques and len(bodies_forces_torques[rigid_prim_view_name]) > 0:
-                    apply_forces = bodies_forces_torques[rigid_prim_view_name][:3]
-                    apply_torques = bodies_forces_torques[rigid_prim_view_name][3:]
-                    rigid_prim_view.apply_forces_and_torques_at_pos(forces=apply_forces, 
-                                                                    torques=apply_torques, 
+                    apply_efforts = list(bodies_forces_torques[rigid_prim_view_name].values())
+                    apply_forces = [apply_effort[:3] for apply_effort in apply_efforts]
+                    apply_torques = [apply_effort[3:] for apply_effort in apply_efforts]
+                    rigid_prim_view.apply_forces_and_torques_at_pos(forces=apply_forces,
+                                                                    torques=apply_torques,
                                                                     indices=list(bodies_forces_torques[rigid_prim_view_name].keys()),
                                                                     positions=None,
                                                                     is_global=True)
