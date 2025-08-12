@@ -1,0 +1,7 @@
+host: tcp://127.0.0.1
+server_port: 7000
+client_port: 8000
+world_name: world
+simulation_name: isaac_sim
+receive: {}
+send: {}

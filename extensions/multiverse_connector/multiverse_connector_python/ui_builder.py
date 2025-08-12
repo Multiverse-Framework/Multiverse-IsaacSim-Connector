@@ -9,6 +9,7 @@
 
 import sys
 import os
+import carb
 
 for path in os.environ["PYTHONPATH"].split(os.pathsep):
     multiverse_client_path = os.path.join(path, "multiverse_client_py")
@@ -32,10 +33,10 @@ class MultiverseConnector(MultiverseClient):
         super().__init__(port, multiverse_meta_data)
 
     def loginfo(self, message: str) -> None:
-        print(f"INFO: {message}")
+        carb.log_info(f"{message}")
 
     def logwarn(self, message: str) -> None:
-        print(f"WARN: {message}")
+        carb.log_warn(f"{message}")
 
     def _run(self) -> None:
         self.loginfo("Start running the client.")
@@ -63,7 +64,6 @@ class MultiverseObject:
 
 import numpy
 import json
-import torch
 import omni.timeline
 import omni.ui as ui
 from isaacsim.gui.components.element_wrappers import CollapsableFrame, TextBlock, StringField, IntField, CheckBox
@@ -91,8 +91,12 @@ class UIBuilder(MultiverseConnector):
 
         self._world = None
         self._scene = None
+        self._selection_panel_frame = None
+        self._send_objects_frame = None
+        self._receive_objects_frame = None
 
         self._clean_up()
+        self._multiverse_params = {}
         self._ignore_names = ["defaultGroundPlane", "Environment", "OmniKit_Viewport_LightRig", "Lights", "Robot", "Objects"]
 
         # Get access to the timeline to control stop/pause/play programmatically
@@ -106,19 +110,6 @@ class UIBuilder(MultiverseConnector):
         """Callback for when the UI is opened from the toolbar.
         This is called directly after build_ui().
         """
-        # Handles the case where the user loads their Articulation and
-        # presses play before opening this extension
-        if self._timeline.is_playing():
-            pass
-        elif self._timeline.is_stopped():
-            pass
-
-    def on_timeline_event(self, event):
-        """Callback for Timeline events (Play, Pause, Stop)
-
-        Args:
-            event (omni.timeline.TimelineEventType): Event Type
-        """
         pass
 
     def on_physics_step(self, step):
@@ -131,37 +122,13 @@ class UIBuilder(MultiverseConnector):
         if len(self._send_objects) + len(self._receive_objects) > 0:
             self.send_and_receive_data()
 
-    def on_stage_event(self, event):
-        """Callback for Stage Events
-
-        Args:
-            event (omni.usd.StageEventType): Event Type
-        """
-        if event.type == int(omni.usd.StageEventType.ASSETS_LOADED):
-            if isinstance(self.world, SimulationContext) and self._timeline.is_playing():
-                self._clean_up()
-                self.build_ui()
-                self._init()
-        elif event.type == int(omni.usd.StageEventType.SIMULATION_START_PLAY):
-            if isinstance(self.world, omni.isaac.core.world.world.World):
-                # self.build_ui()
-                self._init()
-        elif event.type == int(omni.usd.StageEventType.ANIMATION_START_PLAY):
-            if isinstance(self.world, SimulationContext):
-                # self._init()
-                pass  # TODO: Make pause and unpause in IsaacLab work
-        elif event.type == int(omni.usd.StageEventType.SIMULATION_STOP_PLAY):
-            # Ignore pause events
-            if isinstance(self.world, SimulationContext) or self._timeline.is_stopped():
-                self._clean_up(clean_ui=False)
-
-    def cleanup(self):
+    def cleanup(self, clean_ui: bool = True):
         """
         Called when the stage is closed or the extension is hot reloaded.
         Perform any necessary cleanup such as removing active callback functions
         Buttons imported from isaacsim.gui.components.element_wrappers implement a cleanup function that should be called
         """
-        self._clean_up()
+        self._clean_up(clean_ui)
         for ui_elem in self.wrapped_ui_elements:
             ui_elem.cleanup()
 
@@ -180,24 +147,28 @@ class UIBuilder(MultiverseConnector):
         send = {}
         receive = {}
 
-        multiverse_params = {}
+        self._multiverse_params = {}
         if "multiverse_connector" in customLayerData:
-            multiverse_params = customLayerData["multiverse_connector"]
+            self.loginfo(f"Found multiverse_connector data in customLayerData: {customLayerData['multiverse_connector']}")
+            self._multiverse_params = customLayerData["multiverse_connector"]
         else:
-            tmp_path = "/tmp/multiverse_isaacsim_connector.yaml"
+            tmp_path = self.tmp_path
             if os.path.exists(tmp_path):
+                self.loginfo(f"Found {tmp_path}")
                 import yaml
 
                 with open(tmp_path, "r") as file:
-                    multiverse_params = yaml.safe_load(file)
+                    self._multiverse_params = yaml.safe_load(file)
+            else:
+                self.logwarn(f"No multiverse_isaacsim_connector.yaml found in {os.path.dirname(tmp_path)}, using default values.")
 
-        host = multiverse_params.get("host", host)
-        server_port = multiverse_params.get("server_port", server_port)
-        client_port = multiverse_params.get("client_port", client_port)
-        world_name = multiverse_params.get("world_name", world_name)
-        simulation_name = multiverse_params.get("simulation_name", simulation_name)
-        send = multiverse_params.get("send", send)
-        receive = multiverse_params.get("receive", receive)
+        host = self._multiverse_params.get("host", host)
+        server_port = self._multiverse_params.get("server_port", server_port)
+        client_port = self._multiverse_params.get("client_port", client_port)
+        world_name = self._multiverse_params.get("world_name", world_name)
+        simulation_name = self._multiverse_params.get("simulation_name", simulation_name)
+        send = self._multiverse_params.get("send", send)
+        receive = self._multiverse_params.get("receive", receive)
         for key, values in send.items():
             if isinstance(values, str):
                 send[key] = json.loads(values)
@@ -205,9 +176,10 @@ class UIBuilder(MultiverseConnector):
             if isinstance(values, str):
                 receive[key] = json.loads(values)
 
-        selection_panel_frame = CollapsableFrame("Multiverse Connector", collapsed=False)
+        if self._selection_panel_frame is None:
+            self._selection_panel_frame = CollapsableFrame("Multiverse Connector", collapsed=True)
 
-        with selection_panel_frame:
+        with self._selection_panel_frame:
             with ui.VStack(style=get_style(), spacing=5, height=0):
                 self._info_text = TextBlock(
                     "Info",
@@ -327,7 +299,7 @@ class UIBuilder(MultiverseConnector):
     # Functions Below This Point Support The Provided Example And Can Be Replaced/Deleted
     ######################################################################################
 
-    def _init(self):
+    def start(self):
         multiverse_meta_data = MultiverseMetaData(
             world_name=self._world_name_field.get_value(),
             simulation_name=self._simulation_name_field.get_value(),
@@ -580,6 +552,24 @@ class UIBuilder(MultiverseConnector):
             for articulation_view_name, articulation_view in self.scene_registry.articulated_views.items():
                 articulation_view.set_velocities(bodies_velocities[articulation_view_name])
 
+            self._multiverse_params["host"] = self._host_field.get_value()
+            self._multiverse_params["server_port"] = self._server_port_field.get_value()
+            self._multiverse_params["client_port"] = self._client_port_field.get_value()
+            self._multiverse_params["world_name"] = self._world_name_field.get_value()
+            self._multiverse_params["simulation_name"] = self._simulation_name_field.get_value()
+            for send_receive in ["send", "receive"]:
+                self._multiverse_params[send_receive] = {}
+                if send_receive not in response_meta_data:
+                    continue
+                for object_name, attributes in response_meta_data[send_receive].items():
+                    self._multiverse_params[send_receive][object_name] = []
+                    for attribute_name in attributes.keys():
+                        self._multiverse_params[send_receive][object_name].append(attribute_name)
+            with open(self.tmp_path, "w") as file:
+                import yaml
+
+                yaml.dump(self._multiverse_params, file)
+
         self.bind_response_meta_data_callback = bind_response_meta_data
 
         def bind_send_data() -> None:
@@ -651,7 +641,6 @@ class UIBuilder(MultiverseConnector):
                         else:
                             raise ValueError(f"Unknown joint attribute: {attribute}")
                         send_data += [value]
-            print(f"Send data: {send_data}")
             self.send_data = send_data
 
         self.bind_send_data_callback = bind_send_data
@@ -799,6 +788,9 @@ class UIBuilder(MultiverseConnector):
 
         self.send_and_receive_meta_data()
 
+    def stop(self):
+        MultiverseClient.stop(self)
+
     def __add_send_object(self, prim, attr: str):
         if prim not in self._send_objects:
             self._send_objects[prim] = []
@@ -857,3 +849,9 @@ class UIBuilder(MultiverseConnector):
         if self._world is None:
             self._world = World()
         return self._world
+
+    @property
+    def tmp_path(self) -> str:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        tmp_dir = os.path.normpath(os.path.join(current_dir, "..", "tmp"))
+        return os.path.join(tmp_dir, "multiverse_isaacsim_connector.yaml")
