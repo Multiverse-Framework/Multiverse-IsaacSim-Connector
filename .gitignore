@@ -207,4 +207,4 @@ marimo/_lsp/
 __marimo__/
 
 .vscode/
-multiverse_connector/tmp/
+extensions/multiverse_connector/tmp/
