@@ -653,18 +653,20 @@ class UIBuilder(MultiverseConnector):
             bodies_positions = {}
             bodies_quaternions = {}
 
+            bodies_forces_torques = {}
+
             bodies_velocities = {}
             cmd_joints_values = {}
 
             for xform_prim_view_name, xform_prim_view in self.scene_registry.xform_prim_views.items():
                 bodies_positions[xform_prim_view_name], bodies_quaternions[xform_prim_view_name] = xform_prim_view.get_world_poses()
+                bodies_forces_torques[xform_prim_view_name] = {}
 
             for rigid_prim_view_name, rigid_prim_view in self.scene_registry.rigid_prim_views.items():
                 bodies_positions[rigid_prim_view_name], bodies_quaternions[rigid_prim_view_name] = rigid_prim_view.get_world_poses()
                 bodies_velocities[rigid_prim_view_name] = {}
 
             for articulation_view_name, articulation_view in self.scene_registry.articulated_views.items():
-                bodies_positions[articulation_view_name], bodies_quaternions[articulation_view_name] = articulation_view.get_world_poses()
                 bodies_velocities[articulation_view_name] = {}
                 cmd_joints_values[articulation_view_name] = {}
 
@@ -682,7 +684,7 @@ class UIBuilder(MultiverseConnector):
                         raise Exception(f"Body {prim_path.pathString} not found in any view")
 
                     for attribute in attributes:
-                        if attribute == "odometric_velocity" and prim_path in self.body_dict:
+                        if attribute == "odometric_velocity" and prim_path in self._body_dict:
                             quaternion = bodies_quaternions[view_name][object_idx]
 
                             w = quaternion[0]
@@ -738,6 +740,20 @@ class UIBuilder(MultiverseConnector):
                             angular_velocity = [odom_velocity[3], odom_velocity[4], odom_velocity[5]]
 
                             bodies_velocities[view_name] = {object_idx: linear_velocity + angular_velocity}
+                        elif attribute in ["force", "torque"]:
+                            effort = bodies_forces_torques.get(view_name, {}).get(object_idx, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                            if attribute == "force":
+                                force = receive_data[:3]
+                                receive_data = receive_data[3:]
+                                effort[:3] = force
+                            elif attribute == "torque":
+                                torque = receive_data[:3]
+                                receive_data = receive_data[3:]
+                                effort[3:] = torque
+                            receive_data = receive_data[3:]
+                            bodies_forces_torques[view_name][object_idx][attribute] = effort
+                        else:
+                            self.logwarn(f"Attribute {attribute} not supported for body {prim_path.pathString} yet.")
 
                 elif prim_path in self._joint_dict:
                     articulation_view_name, joint_idx = self._object_articulation_view_idx_dict[prim_path]
@@ -755,12 +771,22 @@ class UIBuilder(MultiverseConnector):
                             cmd_joint_effort = receive_data[0]
                             receive_data = receive_data[1:]
                             cmd_joints_values[articulation_view_name][joint_idx][2] = cmd_joint_effort
+                        else:
+                            self.logwarn(f"Attribute {attribute} not supported for joint {prim_path.pathString} yet.")
 
             for rigid_prim_view_name, rigid_prim_view in self.scene_registry.rigid_prim_views.items():
                 if rigid_prim_view_name in bodies_velocities and len(bodies_velocities[rigid_prim_view_name]) > 0:
                     cmd_body_velocities = list(bodies_velocities[rigid_prim_view_name].values())
                     cmd_body_idxes = list(bodies_velocities[rigid_prim_view_name].keys())
                     rigid_prim_view.set_velocities(velocities=cmd_body_velocities, indices=cmd_body_idxes)
+                if rigid_prim_view_name in bodies_forces_torques and len(bodies_forces_torques[rigid_prim_view_name]) > 0:
+                    apply_forces = bodies_forces_torques[rigid_prim_view_name][:3]
+                    apply_torques = bodies_forces_torques[rigid_prim_view_name][3:]
+                    rigid_prim_view.apply_forces_and_torques_at_pos(forces=apply_forces, 
+                                                                    torques=apply_torques, 
+                                                                    indices=list(bodies_forces_torques[rigid_prim_view_name].keys()),
+                                                                    positions=None,
+                                                                    is_global=True)
 
             for articulation_view_name, articulation_view in self.scene_registry.articulated_views.items():
                 if articulation_view_name in bodies_velocities and len(bodies_velocities[articulation_view_name]) > 0:
@@ -845,7 +871,7 @@ class UIBuilder(MultiverseConnector):
         return self._scene._scene_registry
 
     @property
-    def world(self) -> "World":
+    def world(self) -> SimulationContext:
         if self._world is None:
             self._world = World()
         return self._world
